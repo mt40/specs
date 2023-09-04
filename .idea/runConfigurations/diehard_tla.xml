@@ -1,0 +1,11 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="diehard.tla" type="TLCRunConfiguration" factoryName="TLC">
+    <option name="file" value="$PROJECT_DIR$/diehard.tla" />
+    <option name="jvmOptions" value="-XX:+UseParallelGC" />
+    <option name="tlcArguments" />
+    <option name="workingDirectory" value="$PROJECT_DIR$" />
+    <method v="2">
+      <option name="TLC.BeforeRunTask" enabled="true" />
+    </method>
+  </configuration>
+</component>
