@@ -1,2 +1,5 @@
 /states/
 /diehard.toolbox/
+*.out
+*/fischer_SnapShot_*
+*.toolbox
