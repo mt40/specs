@@ -12,8 +12,6 @@ begin
     end with;
 
     print flags;
-    Assert(TRUE, "true");
-    
 end algorithm; *)
 \* BEGIN TRANSLATION (chksum(pcal) = "2483bb3b" /\ chksum(tla) = "41b01527")
 VARIABLES Flags, flags, pc
