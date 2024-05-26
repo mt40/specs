@@ -3,23 +3,32 @@ EXTENDS TLC, Naturals, Integers, Sequences
 
 (*--algorithm scci_p1
     variables 
-        ints = <<>>, max = -999, i = 1;
+        ints = <<>>, max = -999, i = 1,
+        \* ghost variables
+        compare_and_update_log = ;
+
+    define
+        \* safety
+        \* ======
+        NoMessageLoss = \A msg \in all_msg : (msg \in produced_msg) ~> (msg \in consumed_msg)
+        \* If the system is available, it responds with data not older than 1h
+        BoundedStaleness = TRUE \* todo
+        \* If the system was down for 3d and then recover, and consumer speed is
+        \* faster than producer, BoundedStaleness is eventually TRUE
+        Recovery = TRUE \* todo
+        \* Older data can never overwrite newer data
+        Integrity = \A log \in compare_and_update_log : log.ctime <= data.mtime
+
+        \* liveness
+        \* ========
+        \* Assuming API call & producing msg are atomic, when API is called, eventually C&U will run
+        Progress = \A msg \in all_msg : (msg \in produced_msg) ~> (\E log \in compare_and_update_log : log.msg = msg)
+        \* If Compare shows diff, data is eventually updated to newer
+        Validity = \A log \in compare_and_update_log : log.diff ~> (log.ctime <= data.mtime)
+
+    end define;
 
     begin
-        
-        assert \A n \in 1..Len(ints) : ints[n] > -999;
-
-        while (i =< Len(ints)) do
-            if (ints[i] > max) then
-                max := ints[i];
-            end if;
-            i := i + 1;
-        end while;
-
-        assert (
-            (\A n \in 1..Len(ints) : max >= ints[n])
-            /\ (\E n \in 1..Len(ints) : max = ints[n])
-        );
 
     end algorithm; *)
 \* BEGIN TRANSLATION (chksum(pcal) = "bcdac820" /\ chksum(tla) = "847f1fa0")
