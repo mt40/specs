@@ -37,14 +37,14 @@ DataType == [mtime: Nat]
         \* faster than producer, BoundedStaleness is eventually TRUE
         Recovery == TRUE \* todo
         \* Older data can never overwrite newer data
-        Integrity == \A log \in compare_and_update_log : log.ctime <= data.mtime
+        Integrity == \A log \in compare_and_update_log : ~log.diff \/ (log.ctime <= data.mtime)
 
         \* liveness
         \* ---------------
         \* Assuming API call & producing msg are atomic, when API is called, eventually C&U will run
         Progress == <>(\A msg \in MESSAGES : (\E log \in compare_and_update_log : log.msg = msg))
         \* If Compare shows diff, data is eventually updated to newer
-        Validity == \A log \in compare_and_update_log : log.diff ~> (log.ctime <= data.mtime)
+        Validity == <>(\A log \in compare_and_update_log : log.diff => (log.ctime <= data.mtime))
         \* Both consumer and producer should end at some point because we have finite
         \* number of messages
         \* Termination == TRUE
@@ -127,7 +127,7 @@ DataType == [mtime: Nat]
     end process; 
 
     end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "3df405bd" /\ chksum(tla) = "c77d6028")
+\* BEGIN TRANSLATION (chksum(pcal) = "1db254a" /\ chksum(tla) = "f5b50560")
 VARIABLES data, msg_queue, msg_to_send, consumed_msg, compare_and_update_log, 
           pc
 
@@ -137,14 +137,14 @@ BoundedStaleness == TRUE
 
 Recovery == TRUE
 
-Integrity == \A log \in compare_and_update_log : log.ctime <= data.mtime
+Integrity == \A log \in compare_and_update_log : ~log.diff \/ (log.ctime <= data.mtime)
 
 
 
 
 Progress == <>(\A msg \in MESSAGES : (\E log \in compare_and_update_log : log.msg = msg))
 
-Validity == \A log \in compare_and_update_log : log.diff ~> (log.ctime <= data.mtime)
+Validity == <>(\A log \in compare_and_update_log : log.diff => (log.ctime <= data.mtime))
 
 VARIABLES clock, cur_msg, log
 
