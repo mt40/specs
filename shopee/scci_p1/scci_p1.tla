@@ -7,20 +7,23 @@ CONSTANTS NULL
 
 \* constants
 \* ---------------
-MESSAGES == {"m1", "m2"}
+MESSAGES == {"m1", "m2", "m3"}
 
 \* types
 \* ---------------
 LogType == [diff: BOOLEAN, ctime: Nat, msg: MESSAGES]
 DataType == [mtime: Nat]
 
+\* utilities
+SeqOf(set, count) == [1..count -> set]
+
 (*--algorithm scci_p1
     variables 
         data = [mtime |-> 0],
-        \* assume that MQ is ordered, required suitable
-        \* kafka config
-        msg_queue = <<>>,
-        msg_to_send = <<"m1", "m2">>,
+        \* Use set to simulate out-of-order messages (e.g. retry)
+        \* For simplicity, we assume that kafka is partitioned by key already
+        msg_queue = {},
+        msg_to_send = <<"m1", "m2", "m3">>,
 
         \* ghost variables
         \* ---------------
@@ -31,11 +34,6 @@ DataType == [mtime: Nat]
     define
         \* safety
         \* ---------------
-        \* If the system is available, it responds with data not older than 1h
-        BoundedStaleness == TRUE \* todo
-        \* If the system was down for 3d and then recover, and consumer speed is
-        \* faster than producer, BoundedStaleness is eventually TRUE
-        Recovery == TRUE \* todo
         \* Older data can never overwrite newer data
         Integrity == \A log \in compare_and_update_log : ~log.diff \/ (log.ctime <= data.mtime)
 
@@ -45,25 +43,8 @@ DataType == [mtime: Nat]
         Progress == <>(\A msg \in MESSAGES : (\E log \in compare_and_update_log : log.msg = msg))
         \* If Compare shows diff, data is eventually updated to newer
         Validity == <>(\A log \in compare_and_update_log : log.diff => (log.ctime <= data.mtime))
-        \* Both consumer and producer should end at some point because we have finite
-        \* number of messages
-        \* Termination == TRUE
 
     end define;
-
-    \* fair process kafka = "kafka"
-    \* begin
-    \*     KafkaLoop:
-    \*         \* TODO: kafka failure case
-    \*         either
-    \*             if condition then
-                    
-    \*             end if;
-    \*         or
-                
-    \*         end either;
-    \* end process;
-
 
     fair process producer = "producer"
     begin
@@ -74,7 +55,7 @@ DataType == [mtime: Nat]
         
         ActionProducerLoop:
             \* TODO: add failure case
-            msg_queue := Append(msg_queue, Head(msg_to_send));
+            msg_queue := msg_queue \union {Head(msg_to_send)};
             msg_to_send := Tail(msg_to_send);
         
         ActionProducerNextStep:
@@ -91,11 +72,11 @@ DataType == [mtime: Nat]
         log = [diff |-> FALSE, ctime |-> 0, msg |-> "no message"]; \* LogType
     begin
         ActionConsumerWait:
-            await Len(msg_queue) > 0;
-        
+            await Cardinality(msg_queue) > 0;
+
         \* TODO: add failure case
         ActionConsumeMsg:
-            cur_msg := Head(msg_queue);
+            cur_msg := CHOOSE m \in msg_queue: TRUE;
             log := [diff |-> FALSE, ctime |-> clock, msg |-> cur_msg];
             clock := clock + 1;
         
@@ -118,7 +99,7 @@ DataType == [mtime: Nat]
         
         ActionMsgDone:
             consumed_msg := Append(consumed_msg, cur_msg);
-            msg_queue := Tail(msg_queue);
+            msg_queue := msg_queue \ {cur_msg};
             clock := clock + 1;
             compare_and_update_log := compare_and_update_log \union {log};
         
@@ -127,16 +108,11 @@ DataType == [mtime: Nat]
     end process; 
 
     end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "1db254a" /\ chksum(tla) = "f5b50560")
+\* BEGIN TRANSLATION (chksum(pcal) = "e3c256f8" /\ chksum(tla) = "25e1e58d")
 VARIABLES data, msg_queue, msg_to_send, consumed_msg, compare_and_update_log, 
           pc
 
 (* define statement *)
-BoundedStaleness == TRUE
-
-
-Recovery == TRUE
-
 Integrity == \A log \in compare_and_update_log : ~log.diff \/ (log.ctime <= data.mtime)
 
 
@@ -155,8 +131,8 @@ ProcSet == {"producer"} \cup {"consumer"}
 
 Init == (* Global variables *)
         /\ data = [mtime |-> 0]
-        /\ msg_queue = <<>>
-        /\ msg_to_send = <<"m1", "m2">>
+        /\ msg_queue = {}
+        /\ msg_to_send = <<"m1", "m2", "m3">>
         /\ consumed_msg = <<>>
         /\ compare_and_update_log = {}
         (* Process consumer *)
@@ -175,7 +151,7 @@ ActionProducerPreCheck == /\ pc["producer"] = "ActionProducerPreCheck"
                                           clock, cur_msg, log >>
 
 ActionProducerLoop == /\ pc["producer"] = "ActionProducerLoop"
-                      /\ msg_queue' = Append(msg_queue, Head(msg_to_send))
+                      /\ msg_queue' = (msg_queue \union {Head(msg_to_send)})
                       /\ msg_to_send' = Tail(msg_to_send)
                       /\ pc' = [pc EXCEPT !["producer"] = "ActionProducerNextStep"]
                       /\ UNCHANGED << data, consumed_msg, 
@@ -199,14 +175,14 @@ producer == ActionProducerPreCheck \/ ActionProducerLoop
                \/ ActionProducerNextStep \/ ActionProducerDone
 
 ActionConsumerWait == /\ pc["consumer"] = "ActionConsumerWait"
-                      /\ Len(msg_queue) > 0
+                      /\ Cardinality(msg_queue) > 0
                       /\ pc' = [pc EXCEPT !["consumer"] = "ActionConsumeMsg"]
                       /\ UNCHANGED << data, msg_queue, msg_to_send, 
                                       consumed_msg, compare_and_update_log, 
                                       clock, cur_msg, log >>
 
 ActionConsumeMsg == /\ pc["consumer"] = "ActionConsumeMsg"
-                    /\ cur_msg' = Head(msg_queue)
+                    /\ cur_msg' = (CHOOSE m \in msg_queue: TRUE)
                     /\ log' = [diff |-> FALSE, ctime |-> clock, msg |-> cur_msg']
                     /\ clock' = clock + 1
                     /\ pc' = [pc EXCEPT !["consumer"] = "ActionCompare"]
@@ -233,7 +209,7 @@ ActionUpdate == /\ pc["consumer"] = "ActionUpdate"
 
 ActionMsgDone == /\ pc["consumer"] = "ActionMsgDone"
                  /\ consumed_msg' = Append(consumed_msg, cur_msg)
-                 /\ msg_queue' = Tail(msg_queue)
+                 /\ msg_queue' = msg_queue \ {cur_msg}
                  /\ clock' = clock + 1
                  /\ compare_and_update_log' = (compare_and_update_log \union {log})
                  /\ pc' = [pc EXCEPT !["consumer"] = "ActionConsumerNextStep"]
