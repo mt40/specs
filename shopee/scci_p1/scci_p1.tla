@@ -47,14 +47,28 @@ SeqOf(set, count) == [1..count -> set]
     end define;
 
     fair process producer = "producer"
+    variables
+        failure_budget = 3;
     begin
         ActionProducerPreCheck:
             if Len(msg_to_send) = 0 then
                 goto ActionProducerDone;
             end if;
+
+        ActionProducerMayFail:
+            either
+                if failure_budget = 0 then
+                    failure_budget := 3;
+                    goto ActionProducerLoop;
+                else
+                    failure_budget := failure_budget - 1;
+                    goto ActionProducerMayFail;
+                end if;
+            or
+                goto ActionProducerLoop;
+            end either;
         
         ActionProducerLoop:
-            \* TODO: add failure case
             msg_queue := msg_queue \union {Head(msg_to_send)};
             msg_to_send := Tail(msg_to_send);
         
@@ -74,7 +88,7 @@ SeqOf(set, count) == [1..count -> set]
         ActionConsumerWait:
             await Cardinality(msg_queue) > 0;
 
-        \* TODO: add failure case
+        \* TODO: allow failure for a limited time
         ActionConsumeMsg:
             cur_msg := CHOOSE m \in msg_queue: TRUE;
             log := [diff |-> FALSE, ctime |-> clock, msg |-> cur_msg];
@@ -108,7 +122,7 @@ SeqOf(set, count) == [1..count -> set]
     end process; 
 
     end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "e3c256f8" /\ chksum(tla) = "25e1e58d")
+\* BEGIN TRANSLATION (chksum(pcal) = "1c7e571b" /\ chksum(tla) = "35dbc649")
 VARIABLES data, msg_queue, msg_to_send, consumed_msg, compare_and_update_log, 
           pc
 
@@ -122,10 +136,10 @@ Progress == <>(\A msg \in MESSAGES : (\E log \in compare_and_update_log : log.ms
 
 Validity == <>(\A log \in compare_and_update_log : log.diff => (log.ctime <= data.mtime))
 
-VARIABLES clock, cur_msg, log
+VARIABLES failure_budget, clock, cur_msg, log
 
 vars == << data, msg_queue, msg_to_send, consumed_msg, compare_and_update_log, 
-           pc, clock, cur_msg, log >>
+           pc, failure_budget, clock, cur_msg, log >>
 
 ProcSet == {"producer"} \cup {"consumer"}
 
@@ -135,6 +149,8 @@ Init == (* Global variables *)
         /\ msg_to_send = <<"m1", "m2", "m3">>
         /\ consumed_msg = <<>>
         /\ compare_and_update_log = {}
+        (* Process producer *)
+        /\ failure_budget = 3
         (* Process consumer *)
         /\ clock = 1
         /\ cur_msg = "no message"
@@ -145,41 +161,54 @@ Init == (* Global variables *)
 ActionProducerPreCheck == /\ pc["producer"] = "ActionProducerPreCheck"
                           /\ IF Len(msg_to_send) = 0
                                 THEN /\ pc' = [pc EXCEPT !["producer"] = "ActionProducerDone"]
-                                ELSE /\ pc' = [pc EXCEPT !["producer"] = "ActionProducerLoop"]
+                                ELSE /\ pc' = [pc EXCEPT !["producer"] = "ActionProducerMayFail"]
                           /\ UNCHANGED << data, msg_queue, msg_to_send, 
                                           consumed_msg, compare_and_update_log, 
-                                          clock, cur_msg, log >>
+                                          failure_budget, clock, cur_msg, log >>
+
+ActionProducerMayFail == /\ pc["producer"] = "ActionProducerMayFail"
+                         /\ \/ /\ IF failure_budget = 0
+                                     THEN /\ failure_budget' = 3
+                                          /\ pc' = [pc EXCEPT !["producer"] = "ActionProducerLoop"]
+                                     ELSE /\ failure_budget' = failure_budget - 1
+                                          /\ pc' = [pc EXCEPT !["producer"] = "ActionProducerMayFail"]
+                            \/ /\ pc' = [pc EXCEPT !["producer"] = "ActionProducerLoop"]
+                               /\ UNCHANGED failure_budget
+                         /\ UNCHANGED << data, msg_queue, msg_to_send, 
+                                         consumed_msg, compare_and_update_log, 
+                                         clock, cur_msg, log >>
 
 ActionProducerLoop == /\ pc["producer"] = "ActionProducerLoop"
                       /\ msg_queue' = (msg_queue \union {Head(msg_to_send)})
                       /\ msg_to_send' = Tail(msg_to_send)
                       /\ pc' = [pc EXCEPT !["producer"] = "ActionProducerNextStep"]
                       /\ UNCHANGED << data, consumed_msg, 
-                                      compare_and_update_log, clock, cur_msg, 
-                                      log >>
+                                      compare_and_update_log, failure_budget, 
+                                      clock, cur_msg, log >>
 
 ActionProducerNextStep == /\ pc["producer"] = "ActionProducerNextStep"
                           /\ pc' = [pc EXCEPT !["producer"] = "ActionProducerPreCheck"]
                           /\ UNCHANGED << data, msg_queue, msg_to_send, 
                                           consumed_msg, compare_and_update_log, 
-                                          clock, cur_msg, log >>
+                                          failure_budget, clock, cur_msg, log >>
 
 ActionProducerDone == /\ pc["producer"] = "ActionProducerDone"
                       /\ TRUE
                       /\ pc' = [pc EXCEPT !["producer"] = "Done"]
                       /\ UNCHANGED << data, msg_queue, msg_to_send, 
                                       consumed_msg, compare_and_update_log, 
-                                      clock, cur_msg, log >>
+                                      failure_budget, clock, cur_msg, log >>
 
-producer == ActionProducerPreCheck \/ ActionProducerLoop
-               \/ ActionProducerNextStep \/ ActionProducerDone
+producer == ActionProducerPreCheck \/ ActionProducerMayFail
+               \/ ActionProducerLoop \/ ActionProducerNextStep
+               \/ ActionProducerDone
 
 ActionConsumerWait == /\ pc["consumer"] = "ActionConsumerWait"
                       /\ Cardinality(msg_queue) > 0
                       /\ pc' = [pc EXCEPT !["consumer"] = "ActionConsumeMsg"]
                       /\ UNCHANGED << data, msg_queue, msg_to_send, 
                                       consumed_msg, compare_and_update_log, 
-                                      clock, cur_msg, log >>
+                                      failure_budget, clock, cur_msg, log >>
 
 ActionConsumeMsg == /\ pc["consumer"] = "ActionConsumeMsg"
                     /\ cur_msg' = (CHOOSE m \in msg_queue: TRUE)
@@ -187,7 +216,7 @@ ActionConsumeMsg == /\ pc["consumer"] = "ActionConsumeMsg"
                     /\ clock' = clock + 1
                     /\ pc' = [pc EXCEPT !["consumer"] = "ActionCompare"]
                     /\ UNCHANGED << data, msg_queue, msg_to_send, consumed_msg, 
-                                    compare_and_update_log >>
+                                    compare_and_update_log, failure_budget >>
 
 ActionCompare == /\ pc["consumer"] = "ActionCompare"
                  /\ \/ /\ log' = [log EXCEPT !.diff = FALSE]
@@ -195,7 +224,8 @@ ActionCompare == /\ pc["consumer"] = "ActionCompare"
                  /\ clock' = clock + 1
                  /\ pc' = [pc EXCEPT !["consumer"] = "ActionUpdate"]
                  /\ UNCHANGED << data, msg_queue, msg_to_send, consumed_msg, 
-                                 compare_and_update_log, cur_msg >>
+                                 compare_and_update_log, failure_budget, 
+                                 cur_msg >>
 
 ActionUpdate == /\ pc["consumer"] = "ActionUpdate"
                 /\ IF log.diff
@@ -205,7 +235,8 @@ ActionUpdate == /\ pc["consumer"] = "ActionUpdate"
                 /\ clock' = clock + 1
                 /\ pc' = [pc EXCEPT !["consumer"] = "ActionMsgDone"]
                 /\ UNCHANGED << msg_queue, msg_to_send, consumed_msg, 
-                                compare_and_update_log, cur_msg, log >>
+                                compare_and_update_log, failure_budget, 
+                                cur_msg, log >>
 
 ActionMsgDone == /\ pc["consumer"] = "ActionMsgDone"
                  /\ consumed_msg' = Append(consumed_msg, cur_msg)
@@ -213,13 +244,14 @@ ActionMsgDone == /\ pc["consumer"] = "ActionMsgDone"
                  /\ clock' = clock + 1
                  /\ compare_and_update_log' = (compare_and_update_log \union {log})
                  /\ pc' = [pc EXCEPT !["consumer"] = "ActionConsumerNextStep"]
-                 /\ UNCHANGED << data, msg_to_send, cur_msg, log >>
+                 /\ UNCHANGED << data, msg_to_send, failure_budget, cur_msg, 
+                                 log >>
 
 ActionConsumerNextStep == /\ pc["consumer"] = "ActionConsumerNextStep"
                           /\ pc' = [pc EXCEPT !["consumer"] = "ActionConsumerWait"]
                           /\ UNCHANGED << data, msg_queue, msg_to_send, 
                                           consumed_msg, compare_and_update_log, 
-                                          clock, cur_msg, log >>
+                                          failure_budget, clock, cur_msg, log >>
 
 consumer == ActionConsumerWait \/ ActionConsumeMsg \/ ActionCompare
                \/ ActionUpdate \/ ActionMsgDone \/ ActionConsumerNextStep
