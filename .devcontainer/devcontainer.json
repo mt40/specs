@@ -1,0 +1,13 @@
+{
+	"image": "mcr.microsoft.com/devcontainers/universal:2",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"informal.quint-vscode"
+			]
+		}
+	},
+	"postCreateCommand": [
+		"npm i @informalsystems/quint -g"
+	]
+}
