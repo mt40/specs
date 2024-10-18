@@ -101,6 +101,17 @@ module twolayeredcache {
         }
     }
 
+    val strongConsistency2: bool = or {
+        writeTrace == [],
+        and {
+            writeTrace == [.., ("a", x, t)],
+            or {
+                readTrace == [.., ("a", _, t' < t)],
+                readTrace == [.., ("a", x, t' >= t)],
+            }
+        }
+    }
+
     // 2. Liveness Properties / Temporal
 
 
