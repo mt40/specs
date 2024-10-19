@@ -8,10 +8,17 @@ module twolayeredcache {
 
     // FUNCTIONAL LAYER:
     // Values and functions that are state-independent
+    pure val NotFound: str = "not_found"
     pure val requestSet: Set[CacheRequest] = Set(
         {tpe: "R", key: "a", value: ""},
-        {tpe: "W", key: "a", value: "1"}
+        {tpe: "R", key: "b", value: ""},
+        {tpe: "R", key: "c", value: ""},
+        {tpe: "W", key: "a", value: "aaa"},
+        {tpe: "W", key: "b", value: "bbb"},
+        {tpe: "W", key: "c", value: "ccc"}
     )
+    pure def forallListItem(l: List[a], pred: a => bool): bool =
+        l.foldl(true, (result, elem) => result and pred(elem))
     
     // STATE MACHINE:
     // State-dependent definitions and actions
@@ -38,7 +45,6 @@ module twolayeredcache {
         readTrace' = readTrace,
         writeTrace' = writeTrace,
         traceTime' = traceTime,
-        // layer1WriteLog' = layer1WriteLog,
     }
 
     action sendRequest = all {
@@ -46,7 +52,6 @@ module twolayeredcache {
         requests' = requests.append(req),
         layer1' = layer1,
         responses' = responses,
-        // layer1WriteLog' = layer1WriteLog,
         readTrace' = readTrace,
         writeTrace' = writeTrace,
         traceTime' = traceTime,
@@ -58,20 +63,30 @@ module twolayeredcache {
     }
 
     action handleRead(req: CacheRequest): bool = {
-        val v = layer1.get(req.key)
-        all {
-            responses' = responses.append({tpe: req.tpe, key: req.key, value: v}),
-            layer1' = layer1,
-            readTrace' = readTrace.append({key: req.key, value: v, time: traceTime}),
-            traceTime' = traceTime + 1,
-            writeTrace' = writeTrace,
+        if (not(layer1.keys().contains(req.key))) {
+            all {
+                responses' = responses.append({tpe: req.tpe, key: req.key, value: NotFound}),
+                readTrace' = readTrace.append({key: req.key, value: NotFound, time: traceTime}),
+                layer1' = layer1,
+                traceTime' = traceTime + 1,
+                writeTrace' = writeTrace,
+            }
+        } else {
+            val v = layer1.get(req.key)
+            all {
+                responses' = responses.append({tpe: req.tpe, key: req.key, value: v}),
+                readTrace' = readTrace.append({key: req.key, value: v, time: traceTime}),
+                layer1' = layer1,
+                traceTime' = traceTime + 1,
+                writeTrace' = writeTrace,
+            }
         }
     }
 
     action handleWrite(req: CacheRequest): bool = all {
-        layer1' = layer1.set(req.key, req.value),
-        responses' = responses,
+        layer1' = layer1.put(req.key, req.value),
         writeTrace' = writeTrace.append({key: req.key, value: req.value, time: traceTime}),
+        responses' = responses,
         traceTime' = traceTime + 1,
         readTrace' = readTrace,
     }
@@ -91,7 +106,6 @@ module twolayeredcache {
 
     // INIT:
     action init = all {
-        // for simplicity, ignore not-found case
         layer1' = Map("a" -> "1"),
         requests' = [],
         responses' = [],
@@ -109,26 +123,22 @@ module twolayeredcache {
     // CORRECTNESS:
 
     // 1. Safety Properties / Invariants
+
     // either:
     // - write_trace is empty
-    // - write_trace has last write=(key, val, time)
-    //   /\ (
-    //      read_trace is empty
-    //      \/ read_trace has last read=(key, val, t') and t' >= t
-    //      \/ read_trace has last read=(key', val', t') and t' < t, key' & val' are anything
-    //   )
+    // - for all read=(K, V, time):
+    //      let S is sequence of write=(K,*,t'), t' < t, then:
+    //          S is empty
+    //          \/ S[last] = (K, V, t')
     val strongConsistency: bool = or {
         writeTrace == [],
         readTrace == [],
-        val lastWrite = writeTrace[writeTrace.length()-1]
-        val lastRead = readTrace[readTrace.length()-1]
-        or {
-            lastRead.time < lastWrite.time,
-            and {
-                lastWrite.key == lastRead.key,
-                lastWrite.value == lastRead.value,
-            },
-        },
+        forallListItem(readTrace, r => {
+            val writes = writeTrace.select(w => w.key == r.key and w.time < r.time)
+            
+            writes == [] 
+            or writes[writes.length() - 1].value == r.value
+        })
     }
 
     // 2. Liveness Properties / Temporal
