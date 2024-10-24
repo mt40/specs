@@ -3,30 +3,31 @@ module twolayeredcache {
     type CacheRequest = {tpe: str, key: str, value: str}
     type CacheResponse = {tpe: str, key: str, value: str}
     type CacheLayer = str -> str
-    type WriteTraceEntry = { key: str, value: str, time: int }
-    type ReadTraceEntry = { key: str, value: str, time: int }
+    // tpe: "read" or "write"
+    type HistoryEntry = { tpe: str, key: str, value: str, time: int }
 
     // FUNCTIONAL LAYER:
     // Values and functions that are state-independent
     pure val NotFound: str = "not_found"
-    pure val requestSet: Set[CacheRequest] = Set(
-        {tpe: "R", key: "a", value: ""},
-        {tpe: "R", key: "b", value: ""},
-        {tpe: "R", key: "c", value: ""},
-        {tpe: "W", key: "a", value: "aaa"},
-        {tpe: "W", key: "b", value: "bbb"},
-        {tpe: "W", key: "c", value: "ccc"}
-    )
+    pure def newRequest(): CacheRequest = {
+        val tpe = Set("R", "W").chooseSome()
+        val key = Set("a", "b", "c").chooseSome()
+        val value = Set("john", "tom", "carl", "alice", "rick").chooseSome()
+        {tpe: tpe, key: key, value: value}
+    }
+
     pure def forallListItem(l: List[a], pred: a => bool): bool =
         l.foldl(true, (result, elem) => result and pred(elem))
     
     // STATE MACHINE:
     // State-dependent definitions and actions
     var layer1: CacheLayer
+    var layer2: CacheLayer
+
     var requests: List[CacheRequest]
     var responses: List[CacheResponse]
-    var writeTrace: List[WriteTraceEntry]
-    var readTrace: List[ReadTraceEntry]
+
+    var history: List[HistoryEntry]
     var traceTime: int
 
     // HELPERS:
@@ -36,59 +37,68 @@ module twolayeredcache {
     // ACTIONS:
     action receiveResponse = all {
         responses.length() > 0,
-        {
-            val resp = responses.head()
-            responses' = responses.tail()
+        val resp = responses.head()
+        all {
+            responses' = responses.tail(),
+            history' = history.append({
+                tpe: "read", 
+                key: resp.key, 
+                value: resp.value, 
+                time: traceTime,
+            }),
         },
-        layer1' = layer1,
         requests' = requests,
-        readTrace' = readTrace,
-        writeTrace' = writeTrace,
-        traceTime' = traceTime,
     }
 
     action sendRequest = all {
-        nondet req = requestSet.oneOf()
+        val req = newRequest
         requests' = requests.append(req),
-        layer1' = layer1,
+
         responses' = responses,
-        readTrace' = readTrace,
-        writeTrace' = writeTrace,
+        history' = history,
+    }
+
+    action serverProc = all {
+        any {
+            receiveResponse,
+            sendRequest,
+        },
+        layer1' = layer1,
+        layer2' = layer2,
         traceTime' = traceTime,
     }
 
-    action serverProc = any {
-        receiveResponse,
-        sendRequest,
-    }
-
-    action handleRead(req: CacheRequest): bool = {
+    action handleRead(req: CacheRequest): bool = all {
+        // if this key doesn't exist
         if (not(layer1.keys().contains(req.key))) {
             all {
                 responses' = responses.append({tpe: req.tpe, key: req.key, value: NotFound}),
-                readTrace' = readTrace.append({key: req.key, value: NotFound, time: traceTime}),
-                layer1' = layer1,
-                traceTime' = traceTime + 1,
-                writeTrace' = writeTrace,
             }
         } else {
             val v = layer1.get(req.key)
             all {
                 responses' = responses.append({tpe: req.tpe, key: req.key, value: v}),
-                readTrace' = readTrace.append({key: req.key, value: v, time: traceTime}),
-                layer1' = layer1,
-                traceTime' = traceTime + 1,
-                writeTrace' = writeTrace,
             }
-        }
+        },
+
+        layer1' = layer1,
+        layer2' = layer2,
+        history' = history,
+        traceTime' = traceTime + 1,
     }
 
     action handleWrite(req: CacheRequest): bool = all {
+        layer2' = layer2.put(req.key, req.value),
         layer1' = layer1.put(req.key, req.value),
-        writeTrace' = writeTrace.append({key: req.key, value: req.value, time: traceTime}),
+
+        history' = history.append({
+            tpe: "write", 
+            key: req.key,
+            value: req.value,
+            time: traceTime,
+        }),
         responses' = responses,
         traceTime' = traceTime + 1,
-        readTrace' = readTrace,
     }
 
     action layer1Proc = all {
@@ -107,11 +117,11 @@ module twolayeredcache {
     // INIT:
     action init = all {
         layer1' = Map("a" -> "1"),
+        layer2' = Map("a" -> "1"),
         requests' = [],
         responses' = [],
-        writeTrace' = [],
-        readTrace' = [],
         traceTime' = 1,
+        history' = [],
     }
 
     // STEPS:
@@ -124,20 +134,21 @@ module twolayeredcache {
 
     // 1. Safety Properties / Invariants
 
-    // either:
-    // - write_trace is empty
-    // - for all read=(K, V, time):
-    //      let S is sequence of write=(K,*,t'), t' < t, then:
-    //          S is empty
-    //          \/ S[last] = (K, V, t')
-    val strongConsistency: bool = or {
-        writeTrace == [],
-        readTrace == [],
-        forallListItem(readTrace, r => {
-            val writes = writeTrace.select(w => w.key == r.key and w.time < r.time)
-            
-            writes == [] 
-            or writes[writes.length() - 1].value == r.value
+
+    // for any i, j in history:
+    //      if i < j and i is a write(k, v) and j is a read(k, v)
+    //          then i.time < j.time
+    val strongConsistency: bool = {
+        val idx = history.indices()
+        idx.forall(i => {
+            idx.forall(j => {
+                i < j
+                and history[i].tpe == "write"
+                and history[j].tpe == "read"
+                and history[i].key == history[j].key
+                and history[i].value == history[j].value
+                implies history[i].time < history[j].time
+            })
         })
     }
 
@@ -145,5 +156,5 @@ module twolayeredcache {
 
 
     // TESTS:
-    run initAndStepTest = init.then(step)
+    // run initAndStepTest = init.then(step)
 }

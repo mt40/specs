@@ -5,3 +5,4 @@
 *.toolbox
 *.old
 states/
+_apalache-out
