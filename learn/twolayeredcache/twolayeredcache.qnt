@@ -1,13 +1,18 @@
 module twolayeredcache {
+
+    //**********************************************************
     // TYPE DEFINITIONS
+    //**********************************************************
     type CacheRequest = {tpe: str, key: str, value: str}
     type CacheResponse = {tpe: str, key: str, value: str}
     type CacheLayer = str -> str
     // tpe: "read" or "write"
     type HistoryEntry = { tpe: str, key: str, value: str, time: int }
 
-    // FUNCTIONAL LAYER:
+    //**********************************************************
+    // FUNCTIONAL LAYER
     // Values and functions that are state-independent
+    //**********************************************************
     pure val NotFound: str = "not_found"
     pure def newRequest(): CacheRequest = {
         val tpe = Set("R", "W").chooseSome()
@@ -19,8 +24,10 @@ module twolayeredcache {
     pure def forallListItem(l: List[a], pred: a => bool): bool =
         l.foldl(true, (result, elem) => result and pred(elem))
     
-    // STATE MACHINE:
+    //**********************************************************
+    // STATE MACHINE
     // State-dependent definitions and actions
+    //**********************************************************
     var layer1: CacheLayer
     var layer2: CacheLayer
 
@@ -28,13 +35,17 @@ module twolayeredcache {
     var responses: List[CacheResponse]
 
     var history: List[HistoryEntry]
-    var traceTime: int
+    var historyClock: int
 
-    // HELPERS:
+    //**********************************************************
+    // HELPERS
     // Functions for convenience
+    //**********************************************************
     def require(cond: bool): bool = cond
 
-    // ACTIONS:
+    //**********************************************************
+    // ACTIONS
+    //**********************************************************
     action receiveResponse = all {
         responses.length() > 0,
         val resp = responses.head()
@@ -44,7 +55,7 @@ module twolayeredcache {
                 tpe: "read", 
                 key: resp.key, 
                 value: resp.value, 
-                time: traceTime,
+                time: historyClock,
             }),
         },
         requests' = requests,
@@ -65,7 +76,7 @@ module twolayeredcache {
         },
         layer1' = layer1,
         layer2' = layer2,
-        traceTime' = traceTime,
+        historyClock' = historyClock,
     }
 
     action handleRead(req: CacheRequest): bool = all {
@@ -84,7 +95,7 @@ module twolayeredcache {
         layer1' = layer1,
         layer2' = layer2,
         history' = history,
-        traceTime' = traceTime + 1,
+        historyClock' = historyClock + 1,
     }
 
     action handleWrite(req: CacheRequest): bool = all {
@@ -95,10 +106,10 @@ module twolayeredcache {
             tpe: "write", 
             key: req.key,
             value: req.value,
-            time: traceTime,
+            time: historyClock,
         }),
         responses' = responses,
-        traceTime' = traceTime + 1,
+        historyClock' = historyClock + 1,
     }
 
     action layer1Proc = all {
@@ -120,7 +131,7 @@ module twolayeredcache {
         layer2' = Map("a" -> "1"),
         requests' = [],
         responses' = [],
-        traceTime' = 1,
+        historyClock' = 1,
         history' = [],
     }
 
