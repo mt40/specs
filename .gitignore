@@ -6,3 +6,5 @@
 *.old
 states/
 _apalache-out
+learn/.DS_Store
+.DS_Store
