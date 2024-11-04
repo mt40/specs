@@ -79,21 +79,33 @@ module twolayeredcache {
         historyClock' = historyClock,
     }
 
+    // If this key doesn't exist in L1, read from L2.
+    // If key exists in L2, write back to L1 then return.
+    // Otherwise, not found.
     action handleRead(req: CacheRequest): bool = all {
-        // if this key doesn't exist
-        if (not(layer1.keys().contains(req.key))) {
+        any {
             all {
+                layer1.keys().contains(req.key),
+                val v = layer1.get(req.key)
+                responses' = responses.append({tpe: req.tpe, key: req.key, value: v}),
+                layer1' = layer1,
+                layer2' = layer2,
+            },
+            all {
+                layer2.keys().contains(req.key),
+                val v = layer2.get(req.key)
+                all {
+                    responses' = responses.append({tpe: req.tpe, key: req.key, value: v}),
+                    layer1' = layer1.put(req.key, v),
+                },
+                layer2' = layer2,
+            },
+            all {
+                layer1' = layer1,
+                layer2' = layer2,
                 responses' = responses.append({tpe: req.tpe, key: req.key, value: NotFound}),
             }
-        } else {
-            val v = layer1.get(req.key)
-            all {
-                responses' = responses.append({tpe: req.tpe, key: req.key, value: v}),
-            }
         },
-
-        layer1' = layer1,
-        layer2' = layer2,
         history' = history,
         historyClock' = historyClock + 1,
     }
