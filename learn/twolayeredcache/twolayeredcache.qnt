@@ -1,24 +1,36 @@
 module twolayeredcache {
-
     //**********************************************************
     // TYPE DEFINITIONS
     //**********************************************************
+    type CacheLayerValue = {value: str, expire: int}
+    type CacheLayer = str -> CacheLayerValue
     type CacheRequest = {tpe: str, key: str, value: str}
-    type CacheResponse = {tpe: str, key: str, value: str}
-    type CacheLayer = str -> str
+    type CacheResponse = {tpe: str, key: str, value: CacheLayerValue, readTime: int}
+    type CacheReadResult = {value: CacheLayerValue, readLayer1: bool}
+
     // tpe: "read" or "write"
-    type HistoryEntry = { tpe: str, key: str, value: str, time: int }
+    type HistoryEntry = { tpe: str, key: str, value: str, valueExpire: int, time: int }
+
+    //**********************************************************
+    // CONSTANTS
+    //**********************************************************
+    pure val DefaultExpireDuration = 3
 
     //**********************************************************
     // FUNCTIONAL LAYER
     // Values and functions that are state-independent
     //**********************************************************
-    pure val NotFound: str = "not_found"
+    pure val NotFound: CacheLayerValue = {value: "not_found", expire: 0}
     pure def newRequest(): CacheRequest = {
         val tpe = Set("R", "W").chooseSome()
         val key = Set("a", "b", "c").chooseSome()
-        val value = Set("john", "tom", "carl", "alice", "rick").chooseSome()
-        {tpe: tpe, key: key, value: value}
+
+        if (tpe == "R") {
+            {tpe: tpe, key: key, value: ""}
+        } else {
+            val randomValue = Set("john", "tom", "carl", "alice", "rick").chooseSome()
+            {tpe: tpe, key: key, value: randomValue}
+        }
     }
 
     pure def forallListItem(l: List[a], pred: a => bool): bool =
@@ -43,23 +55,16 @@ module twolayeredcache {
     //**********************************************************
     def require(cond: bool): bool = cond
 
+    def keyExists(key: str, layer: CacheLayer, localTime: int): bool = and {
+        layer.keys().contains(key),
+        val v = layer.get(key)
+        v.expire > localTime
+    }
+
     //**********************************************************
     // ACTIONS
+    // 1. Client process
     //**********************************************************
-    action receiveResponse = all {
-        responses.length() > 0,
-        val resp = responses.head()
-        all {
-            responses' = responses.tail(),
-            history' = history.append({
-                tpe: "read", 
-                key: resp.key, 
-                value: resp.value, 
-                time: historyClock,
-            }),
-        },
-        requests' = requests,
-    }
 
     action sendRequest = all {
         val req = newRequest
@@ -69,62 +74,77 @@ module twolayeredcache {
         history' = history,
     }
 
-    action serverProc = all {
+    action clientProc = all {
         any {
-            receiveResponse,
+            // receiveResponse,
             sendRequest,
         },
         layer1' = layer1,
         layer2' = layer2,
-        historyClock' = historyClock,
+        historyClock' = historyClock + 1,
     }
+
+    //**********************************************************
+    // ACTIONS
+    // 1. Server process
+    //**********************************************************
 
     // If this key doesn't exist in L1, read from L2.
     // If key exists in L2, write back to L1 then return.
     // Otherwise, not found.
-    action handleRead(req: CacheRequest): bool = all {
-        any {
-            all {
-                layer1.keys().contains(req.key),
-                val v = layer1.get(req.key)
-                responses' = responses.append({tpe: req.tpe, key: req.key, value: v}),
-                layer1' = layer1,
-                layer2' = layer2,
-            },
-            all {
-                layer2.keys().contains(req.key),
-                val v = layer2.get(req.key)
-                all {
-                    responses' = responses.append({tpe: req.tpe, key: req.key, value: v}),
-                    layer1' = layer1.put(req.key, v),
-                },
-                layer2' = layer2,
-            },
-            all {
-                layer1' = layer1,
-                layer2' = layer2,
-                responses' = responses.append({tpe: req.tpe, key: req.key, value: NotFound}),
+    def doRead(req: CacheRequest): CacheReadResult = {
+        if (keyExists(req.key, layer1, historyClock)){
+                {value: layer1.get(req.key), readLayer1: true}
+        } else {
+            if (keyExists(req.key, layer2, historyClock)) {
+                {value: layer2.get(req.key), readLayer1: false}
+            } else {
+                {value: NotFound, readLayer1: false}
             }
-        },
-        history' = history,
-        historyClock' = historyClock + 1,
+        }
+    }
+
+    action handleRead(req: CacheRequest): bool = all {
+        val resp = doRead(req)
+        all {
+            any {
+                all {
+                    resp.readLayer1,
+                    layer1' = layer1,
+                    layer2' = layer2,
+                },
+                all {
+                    not(resp.readLayer1),
+                    layer1' = layer1.put(req.key, resp.value),
+                    layer2' = layer2,
+                }
+            },
+            responses' = responses,
+            history' = history.append({
+                tpe: "read", 
+                key: req.key, 
+                value: resp.value.value,
+                valueExpire: resp.value.expire,
+                time: historyClock,
+            }),
+        }
     }
 
     action handleWrite(req: CacheRequest): bool = all {
-        layer2' = layer2.put(req.key, req.value),
-        layer1' = layer1.put(req.key, req.value),
+        layer2' = layer2.put(req.key, {value: req.value, expire: historyClock + DefaultExpireDuration}),
+        layer1' = layer1.put(req.key, {value: req.value, expire: historyClock + DefaultExpireDuration}),
 
         history' = history.append({
             tpe: "write", 
             key: req.key,
             value: req.value,
+            valueExpire: 0,
             time: historyClock,
         }),
         responses' = responses,
-        historyClock' = historyClock + 1,
     }
 
-    action layer1Proc = all {
+    action serverProc = all {
         requests.length() > 0,
         {
             val req = requests.head()
@@ -135,32 +155,36 @@ module twolayeredcache {
             }
         },
         requests' = requests.tail(),
+        historyClock' = historyClock + 1,
     }
 
     // INIT:
     action init = all {
-        layer1' = Map("a" -> "1"),
-        layer2' = Map("a" -> "1"),
         requests' = [],
         responses' = [],
         historyClock' = 1,
         history' = [],
+        layer1' = Map("a" -> {value: "1", expire: historyClock + DefaultExpireDuration}),
+        layer2' = Map("a" -> {value: "1", expire: historyClock + DefaultExpireDuration}),
     }
 
     // STEPS:
     action step = any {
+        clientProc,
         serverProc,
-        layer1Proc,
     }
 
-    // CORRECTNESS:
-
+    //**********************************************************
+    // CORRECTNESS
     // 1. Safety Properties / Invariants
+    //**********************************************************
 
-
+    // Any read returns the latest written value. Formally:
+    //
     // for any i, j in history:
     //      if i < j and i is a write(k, v) and j is a read(k, v)
     //          then i.time < j.time
+    //
     val strongConsistency: bool = {
         val idx = history.indices()
         idx.forall(i => {
@@ -170,14 +194,36 @@ module twolayeredcache {
                 and history[j].tpe == "read"
                 and history[i].key == history[j].key
                 and history[i].value == history[j].value
+
                 implies history[i].time < history[j].time
             })
         })
     }
 
+    // Any read returns non-expired value
+    val notReadingExpiredValues: bool = {
+        val idx = history.indices()
+        idx.forall(i => {
+            history[i].tpe == "read"
+            and history[i].value != NotFound.value
+
+            implies history[i].time < history[i].valueExpire
+        })
+    }
+
+    val safety: bool = {
+        strongConsistency
+        and notReadingExpiredValues
+    }
+
+    //**********************************************************
+    // CORRECTNESS
     // 2. Liveness Properties / Temporal
+    //**********************************************************
 
 
-    // TESTS:
+    //**********************************************************
+    // QUICK TESTS
+    //**********************************************************
     // run initAndStepTest = init.then(step)
 }
