@@ -201,7 +201,7 @@ module twolayeredcache {
     }
 
     // Any read returns non-expired value
-    val notReadingExpiredValues: bool = {
+    val validity: bool = {
         val idx = history.indices()
         idx.forall(i => {
             history[i].tpe == "read"
@@ -213,7 +213,7 @@ module twolayeredcache {
 
     val safety: bool = {
         strongConsistency
-        and notReadingExpiredValues
+        and validity
     }
 
     //**********************************************************
