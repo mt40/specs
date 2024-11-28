@@ -4,9 +4,10 @@ module twolayeredcache {
     //**********************************************************
     type CacheLayerValue = {value: str, expire: int}
     type CacheLayer = str -> CacheLayerValue
-    type CacheRequest = {tpe: str, key: str, value: str}
+    type CacheRequest = {pid: ClientPID, tpe: str, key: str, value: str}
     type CacheResponse = {tpe: str, key: str, value: CacheLayerValue, readTime: int}
     type CacheReadResult = {value: CacheLayerValue, readLayer1: bool}
+    type ClientPID = int
 
     // tpe: "read" or "write"
     type HistoryEntry = { tpe: str, key: str, value: str, valueExpire: int, time: int }
@@ -15,37 +16,29 @@ module twolayeredcache {
     // CONSTANTS
     //**********************************************************
     pure val DefaultExpireDuration = 3
+    pure val ClientProcesses: Set[ClientPID] = 1.to(10)
 
     //**********************************************************
     // FUNCTIONAL LAYER
     // Values and functions that are state-independent
     //**********************************************************
     pure val NotFound: CacheLayerValue = {value: "not_found", expire: 0}
-    pure def newRequest(): CacheRequest = {
-        val tpe = Set("R", "W").chooseSome()
-        val key = Set("a", "b", "c").chooseSome()
-
-        if (tpe == "R") {
-            {tpe: tpe, key: key, value: ""}
-        } else {
-            val randomValue = Set("john", "tom", "carl", "alice", "rick").chooseSome()
-            {tpe: tpe, key: key, value: randomValue}
-        }
-    }
-
-    pure def forallListItem(l: List[a], pred: a => bool): bool =
-        l.foldl(true, (result, elem) => result and pred(elem))
     
     //**********************************************************
     // STATE MACHINE
     // State-dependent definitions and actions
     //**********************************************************
-    var layer1: CacheLayer
+    
+    // layer1 is in-memory cache inside each Client Process
+    var layer1: ClientPID -> CacheLayer
     var layer2: CacheLayer
 
-    var requests: List[CacheRequest]
-    var responses: List[CacheResponse]
+    // There is no guarantee in order of requests and responses
+    var requests: Set[CacheRequest]
+    var responses: Set[CacheResponse]
 
+    // Global log of system interactions. Use to specify correctness
+    // properties below.
     var history: List[HistoryEntry]
     var historyClock: int
 
@@ -53,8 +46,6 @@ module twolayeredcache {
     // HELPERS
     // Functions for convenience
     //**********************************************************
-    def require(cond: bool): bool = cond
-
     def keyExists(key: str, layer: CacheLayer, localTime: int): bool = and {
         layer.keys().contains(key),
         val v = layer.get(key)
@@ -66,18 +57,26 @@ module twolayeredcache {
     // 1. Client process
     //**********************************************************
 
-    action sendRequest = all {
-        val req = newRequest
-        requests' = requests.append(req),
+    action sendRequest(pid: ClientPID): bool = all {
+        nondet tpe = Set("R", "W").oneOf()
+        nondet key = Set("a", "b", "c").oneOf()
+        nondet value = Set("john", "tom", "carl", "alice", "rick").oneOf()
 
+        pure val req = if (tpe == "R") {
+            {pid: pid, tpe: tpe, key: key, value: ""}
+        } else {
+            {pid: pid, tpe: tpe, key: key, value: value}
+        }
+
+        requests' = requests.union(Set(req)),
         responses' = responses,
         history' = history,
     }
 
     action clientProc = all {
+        nondet pid = ClientProcesses.oneOf()
         any {
-            // receiveResponse,
-            sendRequest,
+            sendRequest(pid),
         },
         layer1' = layer1,
         layer2' = layer2,
@@ -93,8 +92,9 @@ module twolayeredcache {
     // If key exists in L2, write back to L1 then return.
     // Otherwise, not found.
     def doRead(req: CacheRequest): CacheReadResult = {
-        if (keyExists(req.key, layer1, historyClock)){
-                {value: layer1.get(req.key), readLayer1: true}
+        val layer1OfPID = layer1.get(req.pid)
+        if (keyExists(req.key, layer1OfPID, historyClock)){
+                {value: layer1OfPID.get(req.key), readLayer1: true}
         } else {
             if (keyExists(req.key, layer2, historyClock)) {
                 {value: layer2.get(req.key), readLayer1: false}
@@ -115,11 +115,13 @@ module twolayeredcache {
                 },
                 all {
                     not(resp.readLayer1),
-                    layer1' = layer1.put(req.key, resp.value),
+                    layer1' = layer1.setBy(req.pid, layer => layer.put(req.key, resp.value)),
                     layer2' = layer2,
                 }
             },
-            responses' = responses,
+            responses' = responses.union(Set({
+                tpe: "read", key: req.key, value: resp.value, readTime: historyClock
+            })),
             history' = history.append({
                 tpe: "read", 
                 key: req.key, 
@@ -132,7 +134,11 @@ module twolayeredcache {
 
     action handleWrite(req: CacheRequest): bool = all {
         layer2' = layer2.put(req.key, {value: req.value, expire: historyClock + DefaultExpireDuration}),
-        layer1' = layer1.put(req.key, {value: req.value, expire: historyClock + DefaultExpireDuration}),
+
+        layer1' = layer1.setBy(req.pid, layer => layer.put(req.key, {
+            value: req.value,
+            expire: historyClock + DefaultExpireDuration,
+        })),
 
         history' = history.append({
             tpe: "write", 
@@ -145,27 +151,31 @@ module twolayeredcache {
     }
 
     action serverProc = all {
-        requests.length() > 0,
-        {
-            val req = requests.head()
+        requests.size() > 0,
+        nondet req = oneOf(requests)
+        all {
             if (req.tpe == "R") {
                 handleRead(req)
             } else {
                 handleWrite(req)
-            }
+            },
+            requests' = requests.exclude(Set(req)),
         },
-        requests' = requests.tail(),
         historyClock' = historyClock + 1,
     }
 
     // INIT:
-    action init = all {
-        requests' = [],
-        responses' = [],
-        historyClock' = 1,
-        history' = [],
-        layer1' = Map("a" -> {value: "1", expire: historyClock + DefaultExpireDuration}),
-        layer2' = Map("a" -> {value: "1", expire: historyClock + DefaultExpireDuration}),
+    action init = {
+        all {
+            requests' = Set(),
+            responses' = Set(),
+            
+            historyClock' = 1,
+            history' = [],
+
+            layer1' = ClientProcesses.mapBy(pid => Map("a" -> {value: "1", expire: 1 + DefaultExpireDuration})),
+            layer2' = Map("a" -> {value: "1", expire: 1 + DefaultExpireDuration}),
+        }
     }
 
     // STEPS:
