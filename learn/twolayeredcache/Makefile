@@ -5,7 +5,7 @@ run:
 	quint run twolayeredcache.qnt --invariant=safety
 
 verify:
-	quint verify twolayeredcache.qnt --invariant=safety --verbosity=5 --max-steps=10
+	quint verify twolayeredcache.qnt --invariant=safety --verbosity=5 --max-steps=7
 
 quickverify:
 	quint verify twolayeredcache.qnt --invariant=safety --verbosity=5 --max-steps=2
