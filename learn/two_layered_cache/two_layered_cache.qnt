@@ -1,4 +1,7 @@
-module twolayeredcache {
+// -*- mode: Bluespec; -*-
+
+module two_layered_cache {
+
     //**********************************************************
     // TYPE DEFINITIONS
     //**********************************************************
