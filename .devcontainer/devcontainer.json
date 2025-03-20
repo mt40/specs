@@ -1,11 +1,16 @@
 {
-	"image": "mcr.microsoft.com/devcontainers/base:bullseye",
+	"image": "mcr.microsoft.com/devcontainers/javascript-node",
 	"customizations": {
 		"vscode": {
 			"extensions": [
-				"informal.quint-vscode"
+				"informal.quint-vscode",
+				"alygin.vscode-tlaplus",
+				"ms-vscode.makefile-tools"
 			]
 		}
+	},
+	"features": {
+		"ghcr.io/devcontainers/features/java:1": {}
 	},
 	"postCreateCommand": [
 		"npm i @informalsystems/quint -g"
