@@ -9,6 +9,7 @@ module two_layered_cache {
     type ClientPID = int
 
     // tpe: "read" or "write"
+    // the last entry is the latest
     type HistoryEntry = { tpe: str, value: int}
 
     //**********************************************************
@@ -38,8 +39,14 @@ module two_layered_cache {
     // Values and functions that are state-independent
     //**********************************************************
 
-    action writeLayer(layer: CacheLayer, v: int): bool = all {
-        layer' = layer.union(Set(v))
+    action writeLayer(layer: CacheLayer, v: int): bool = any {
+        layer' = layer.union(Set(v)),
+    }
+
+    action writeLayerMayCrash(layer: CacheLayer, v: int): bool = any {
+        writeLayer(layer, v),
+        // CRASHED: v is not written to this layer
+        layer' = layer,
     }
 
     //**********************************************************
@@ -53,7 +60,7 @@ module two_layered_cache {
 
     action writeCache(pid: ClientPID, v: int): bool = all {
         writeLayer(l1, v),
-        writeLayer(l2, v),
+        writeLayerMayCrash(l2, v),
         history' = history.append({
             tpe: "write",
             value: v,
@@ -117,7 +124,7 @@ module two_layered_cache {
     }
 
     action init = all {
-        num' = 0,
+        num' = 1,
         l1' = Set(),
         l2' = Set(),
         history' = [],
@@ -171,14 +178,26 @@ module two_layered_cache {
         and writeAfterWrite
     }
 
+    // All layers contain the same latest written value
+    val agreement: bool = {
+        val writes = history.select(entry => entry.tpe == "write")
+
+        writes.length() > 0
+        and l1.contains(writes[writes.length() - 1].value)
+        
+        implies l2.contains(writes[writes.length() - 1].value)
+    }
+
     val safety: bool = {
         strongConsistency
+        and agreement
     }
 
     //**********************************************************
     // CORRECTNESS
     // 2. Liveness Properties / Temporal
     //**********************************************************
+
 
 
     //**********************************************************
