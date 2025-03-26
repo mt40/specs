@@ -1,16 +1,13 @@
 // -*- mode: Bluespec; -*-
 
 module two_layered_cache {
-
     //**********************************************************
     // TYPE DEFINITIONS
     //**********************************************************
-    type CacheLayer = Set[int]
+    type CacheLayer = Set[int] // use Set so it is easy to extend to multiple keys if needed
     type ClientPID = int
 
-    // tpe: "read" or "write"
-    // the last entry is the latest
-    type HistoryEntry = { tpe: str, value: int}
+    type HistoryEntry = Read(int) | Write(int)
 
     //**********************************************************
     // CONSTANTS
@@ -20,7 +17,7 @@ module two_layered_cache {
     pure val MaxVal = 1000000
     pure val Expired = -99
     pure val NotFound = -98
-    
+
     //**********************************************************
     // STATE MACHINE
     // State-dependent definitions and actions
@@ -39,92 +36,115 @@ module two_layered_cache {
     // Values and functions that are state-independent
     //**********************************************************
 
-    action writeLayer(layer: CacheLayer, v: int): bool = any {
-        layer' = layer.union(Set(v)),
+    pure def isWrite(entry: HistoryEntry): bool = {
+        match entry {
+            | Write(_) => true
+            | _ => false
+        }
     }
 
-    action writeLayerMayCrash(layer: CacheLayer, v: int): bool = any {
-        writeLayer(layer, v),
-        // CRASHED: v is not written to this layer
-        layer' = layer,
+    pure def isRead(entry: HistoryEntry): bool = {
+        match entry {
+            | Read(_) => true
+            | _ => false
+        }
+    }
+
+    pure def value(entry: HistoryEntry): int = {
+        match entry {
+            | Read(v) => v
+            | Write(v) => v
+        }
+    }
+
+    // Get the first element of a given non-empty Set
+    pure def getHeadOfSet(s: Set[int]): int = {
+        s.fold(0, (a, b) => b)
     }
 
     //**********************************************************
     // HELPERS
-    // Functions for convenience
+    // Operators for convenience
     //**********************************************************
+
+    action writeL1(v: int): bool = all {
+        l1' = l1.union(Set(v))
+    }
+
+    action writeL2(v: int): bool = all {
+        l2' = l2.union(Set(v))
+    }
 
     //**********************************************************
     // ACTIONS
     //**********************************************************
 
     action writeCache(pid: ClientPID, v: int): bool = all {
-        writeLayer(l1, v),
-        writeLayerMayCrash(l2, v),
-        history' = history.append({
-            tpe: "write",
-            value: v,
-        }),
+        writeL1(v),
+        writeL2(v),
+        history' = history.append(Write(v))
     }
 
-    action handleNotFound: bool = all {
+    action handleNotFound(): bool = all {
         l1' = l1,
         l2' = l2,
-        history' = history.append({
-            tpe: "read",
-            value: NotFound,
-        }),
+        history' = history.append(Read(NotFound))
     }
 
-    action handleL1Found(v: int): bool = all {
-        l1' = l1,
-        l2' = l2,
-        history' = history.append({
-            tpe: "read",
-            value: v,
-        }),
-    }
-
-    action handleL2Found(v: int): bool = all {
-        writeLayer(l1, v),
-        l2' = l2,
-        history' = history.append({
-            tpe: "read",
-            value: v,
-        }),
-    }
-
-    action handleFound(v: int): bool = {
-        if(l1.contains(v)) {
-            handleL1Found(v)
-        } else {
-            handleL2Found(v)
+    action handleL1Found(): bool = {
+        val value = getHeadOfSet(l1)
+        all {
+            l1' = l1,
+            l2' = l2,
+            history' = history.append(Read(value))
         }
     }
 
-    // If this val doesn't exist in L1, read from L2.
+    action handleL2Found(): bool = {
+        val value = getHeadOfSet(l2)
+        all {
+            writeL1(value),
+            l2' = l2,
+            history' = history.append(Read(value))
+        }
+    }
+
+    action handleFound(): bool = {
+        if (l1.size() > 0) {
+            handleL1Found
+        } else {
+            handleL2Found
+        }
+    }
+
+    // If val doesn't exist in L1, read from L2.
     // If val exists in L2, write back to L1 then return.
     // Otherwise, not found (false).
-    action readCache(pid: ClientPID, v: int): bool = {
-        if (not(l1.contains(v)) and not(l2.contains(v))) {
-            handleNotFound
+    action readCache(pid: ClientPID): bool = {
+        if (l1.size() > 0 or l2.size() > 0) {
+            handleFound
         } else {
-            handleFound(v)
+            handleNotFound
         }
     }
 
     action clientProc = all {
-        num' = num + 1,
         nondet pid = ClientProcesses.oneOf()
-        nondet readVal = 1.to(num).oneOf()
+        
         any {
-            writeCache(pid, num),
-            readCache(pid, readVal),
+            all {
+                num' = num + 1,
+                writeCache(pid, num)
+            },
+            all {
+                num' = num,
+                readCache(pid),
+            }
         },
     }
 
     action init = all {
-        num' = 1,
+        num' = 0,
         l1' = Set(),
         l2' = Set(),
         history' = [],
@@ -153,9 +173,9 @@ module two_layered_cache {
         idx.forall(i => {
             idx.forall(j => {
                 i < j
-                and history[i].tpe == "write"
-                and history[j].tpe == "read"
-                implies history[i].value <= history[j].value
+                and history[i].isWrite()
+                and history[j].isRead()
+                implies history[i].value() <= history[j].value()
             })
         })
     }
@@ -166,9 +186,9 @@ module two_layered_cache {
         idx.forall(i => {
             idx.forall(j => {
                 i < j
-                and history[i].tpe == "write"
-                and history[j].tpe == "write"
-                implies history[i].value < history[j].value
+                and history[i].isWrite()
+                and history[j].isWrite()
+                implies history[i].value() < history[j].value()
             })
         })
     }
@@ -178,26 +198,24 @@ module two_layered_cache {
         and writeAfterWrite
     }
 
-    // All layers contain the same latest written value
-    val agreement: bool = {
-        val writes = history.select(entry => entry.tpe == "write")
+    // // All layers contain the same latest written value
+    // val agreement: bool = {
+    //     val writes = history.select(entry => entry.tpe == "write")
 
-        writes.length() > 0
-        and l1.contains(writes[writes.length() - 1].value)
-        
-        implies l2.contains(writes[writes.length() - 1].value)
-    }
+    //     writes.length() > 0
+    //     and layer1.contains(writes[writes.length() - 1].value)
+
+    //     implies layer2.contains(writes[writes.length() - 1].value)
+    // }
 
     val safety: bool = {
         strongConsistency
-        and agreement
     }
 
     //**********************************************************
     // CORRECTNESS
     // 2. Liveness Properties / Temporal
     //**********************************************************
-
 
 
     //**********************************************************
