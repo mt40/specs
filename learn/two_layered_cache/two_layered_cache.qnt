@@ -1,5 +1,15 @@
 // -*- mode: Bluespec; -*-
 
+ /** 
+  * Quint specification for a two-layered cache system. The system consists of
+  * two cache layers (L1 and L2) that store integer values. Clients can read and
+  * write values to the cache. The specification verifies key properties like
+  * read-after-write consistency and write-after-write consistency across the
+  * cache layers.
+  * 
+  * Preston Pham (@mt40), 2025
+  */ 
+
 module two_layered_cache {
     //**********************************************************
     // TYPE DEFINITIONS
