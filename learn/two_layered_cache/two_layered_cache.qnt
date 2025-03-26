@@ -68,11 +68,11 @@ module two_layered_cache {
     //**********************************************************
 
     action writeL1(v: int): bool = all {
-        l1' = l1.union(Set(v))
+        l1' = Set(v)
     }
 
     action writeL2(v: int): bool = all {
-        l2' = l2.union(Set(v))
+        l2' = Set(v)
     }
 
     //**********************************************************
@@ -143,11 +143,17 @@ module two_layered_cache {
         },
     }
 
-    action init = all {
-        num' = 0,
-        l1' = Set(),
-        l2' = Set(),
-        history' = [],
+    // Clear layer 1 data to simulate its
+    // volatility. Because in practice, layer 1
+    // usually uses memory for storage.
+    action l1Expire = all {
+        any {
+            l1' = l1,
+            l1' = Set()
+        },
+        l2' = l2,
+        num' = num,
+        history' = history
     }
 
     action stutter = all {
@@ -157,9 +163,17 @@ module two_layered_cache {
         history' = history,
     }
 
+    action init = all {
+        num' = 0,
+        l1' = Set(),
+        l2' = Set(),
+        history' = [],
+    }
+
     action step = any {
         clientProc,
         stutter,
+        l1Expire
     }
 
     //**********************************************************
@@ -193,10 +207,10 @@ module two_layered_cache {
         })
     }
 
-    val strongConsistency: bool = {
-        readAfterWrite
-        and writeAfterWrite
-    }
+    //**********************************************************
+    // CORRECTNESS
+    // 2. Liveness Properties / Temporal
+    //**********************************************************
 
     // All layers contain the same latest written value
     val agreement: bool = {
@@ -204,17 +218,6 @@ module two_layered_cache {
         val b = getHeadOfSet(l2)
         a == b
     }
-
-    val safety: bool = {
-        strongConsistency
-        and agreement
-    }
-
-    //**********************************************************
-    // CORRECTNESS
-    // 2. Liveness Properties / Temporal
-    //**********************************************************
-
 
     //**********************************************************
     // QUICK TESTS
