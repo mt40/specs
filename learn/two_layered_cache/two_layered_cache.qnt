@@ -198,18 +198,16 @@ module two_layered_cache {
         and writeAfterWrite
     }
 
-    // // All layers contain the same latest written value
-    // val agreement: bool = {
-    //     val writes = history.select(entry => entry.tpe == "write")
-
-    //     writes.length() > 0
-    //     and layer1.contains(writes[writes.length() - 1].value)
-
-    //     implies layer2.contains(writes[writes.length() - 1].value)
-    // }
+    // All layers contain the same latest written value
+    val agreement: bool = {
+        val a = getHeadOfSet(l1)
+        val b = getHeadOfSet(l2)
+        a == b
+    }
 
     val safety: bool = {
         strongConsistency
+        and agreement
     }
 
     //**********************************************************
